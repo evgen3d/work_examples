@@ -1,228 +1,137 @@
 module Eb
+  # Eb application controller.
   class ApplicationController < ActionController::Base
-	  
-	#------------------------------------------------
-	# Necessary actions for all application controller
-	#------------------------------------------------
+    # Necessary actions for all application controller.
+    before_action :detect_user
+    before_action :set_locale
+    before_action :get_engines
+    before_action :getcontrollers
+    before_action :check_frontend
+    # Prevent CSRF attacks by raising an exception.
+    # For APIs, you may want to use :null_session instead.
+    protect_from_forgery with: :exception
+    helper :all
+    # Set default locale for translations.
+    def default_url_options
+      { locale: I18n.locale }
+    end
 
-	before_action :detect_user
-	before_action :set_locale
-	before_action :get_engines
-	before_action :get_controllers
-	before_action :check_frontend
+    # Create list of views from engines collector.
+    def check_frontend
+      ar = Eb::Permission.getcontrollers true
+      ar.each do |ara|
+        if Eb::Frontend.css_exists?(ara)
+          # Mylog::Mylog.debug
+        end
+      end
+    end
 
-	# Prevent CSRF attacks by raising an exception.
-	# For APIs, you may want to use :null_session instead.
-	protect_from_forgery with: :exception
-	helper :all
-	
-	# -- Set default locale for translations
-	def default_url_options(options={})
-	    { locale: I18n.locale }
-      	end
-	
-#------------------------------------------------
-# Create list of views from engines collector
-#------------------------------------------------
+    # TODO: Load helpers
+    def load_helpers
+      # hlp = []
+      # ar = get_engines true
+      Eb::ApplicationController.helper Eb::Posts::Engine.helpers
+      # -- Temporary commented for future checking
+      # ar.each do |engine|
+      # ApplicationController.helper(engine.helpers)
+      # helper engine.helpers
+      # end
+      # return hlp
+    end
 
-	def check_frontend 
-		Mylog::Mylog.debug b.get
-	end
-#---------------------------------------------------------
-# Load helpers 
-#---------------------------------------------------------
-	def load_helpers
-		hlp=Array.new
-		ar=get_engines true
-		Eb::ApplicationController.helper Eb::Posts::Engine.helpers
-		
-		# -- Temporary commented for future checking
-		#ar.each do |engine|
+    # Set locale for whole site translation.
+    def set_locale
+      rxp = Regexp.new('[a-zA-Z]{2}')
+      user_locale = cookies[:locale] || params[:locale]
+      user_locale = user_locale.present? ? user_locale.scan(rxp) : 'en'
+      # Check, is this locale available for using.
+      #   Please note: this needed for disable invalid locale warning.
+      available = I18n.available_locales.include?(user_locale[0].to_sym)
+      I18n.locale = available ? user_locale[0] : 'en'
+    end
 
-		#	ApplicationController.helper(engine.helpers)
-			#helper engine.helpers
+    # Run authorization mechanism.
+    def detect_user
+      @session = Session.find_by(sesid: cookies[:scode])
+      # TODO: Check agent and system to be sure that this is exactly this guy.
+      #   Commented for checking more deeply authorization
+      #   hash = request.env['HTTP_USER_AGENT']
+      #   hash = Base64.encode64(hash)
+      return false unless @session.present? # and @session.user_agent==hash
+      @cur_user = User.find(@session.user_id)
+    end
 
-		#	end
-	#return hlp
-	end
-#---------------------------------------------------------
-# Set locale for whole site translation
-#---------------------------------------------------------
- 
-  
-	  def set_locale
-		I18n.locale = params[:locale] || "en"
-	  end
+    # Check access control and grant or deny it
+    #   Usage: If object presented - check is user_id is exact the
+    #   same for grant author change
+    #   Also this method modify @cur_user.author == true if allowed
+    #   All groups are dynamically taken from database,
+    #   but overall permissions are located in permissions.yml file
+    #   You can generate permissions simply by run:
+    #   rake permission:build
+    def access_control(object = nil)
+      if object.present? && @cur_user.present?
+        author = author?
+      end
+      perm = Permission
+      perm.getReq(params[:controller], params[:action], request.request_method)
+      redirect t('redirect.denied') unless perm.grant?(user_perm, author)
+    end
 
-#---------------------------------------------------------
-# Run authorization mechanism
-#---------------------------------------------------------
-	  private
+    # Check is author?
+    def author?(object)
+      is_user = object.class.name == @cur_user.class.name ? true : false
+      author_id = is_user ? object.id : object.user_id
+      author = author_id == @cur_user.id ? true : false
+      author
+    end
 
-	  def detect_user
+    # Get user permission
+    def user_perm
+      @cur_user.present? ? @cur_user.user_group.permission : 'z'
+    end
 
-			@session = Session.find_by(sesid:cookies[:scode])
-			
-			# Check user agent and system to be sure that this is exactly this guy
-			hash=request.env['HTTP_USER_AGENT'] 
-			hash= Base64.encode64(hash)
-			if @session.present? # --  commented for checking more deeply authorization: and @session.user_agent==hash
+    # Redirecting directive
+    #   necessary to return for terminate any actions
+    #   after redirecting to exclude double redirect error
+    def redirect(notice = nil, where = nil)
+      flash[:notice] = notice.blank? ? t('redirect.denied') : notice
+      # If admin argument is equal admin - redirect going to admin panel or
+      # if session[redirect_to] persist, redirect there
+      redir = if where
+                where == 'admin' ? eb.admin_path : where
+              else
+                :root
+              end
+      redir = session[:redirect_to] if session[:redirect_to].present?
+      redirect_to redir
+    end
 
-				@cur_user = User.find(@session.user_id)
+    # Checking object for existance. Important for most of control actions
+    def exist(obj)
+      redirect t('redirect.not_found') if obj.nil?
+    end
 
-			end
+    # Can be deleted last object or not?
+    def delete_last(obj)
+      redirect t('redirect.delete_last') if obj.id == 1
+    end
 
-	  end
+    # Get all eb CMS  engines connected to system
+    def get_engines(engines = false)
+      ebengines = []
+      Rails::Engine.subclasses.each do |engine|
+        ebengines << if engine.name.include?('Eb')
+                       engines ? engine : engine.name
+                     end
+      end
+      @engines = ebengines
+      ebengines
+    end
 
-#---------------------------------------------------------
-# => Check access control and grant or deny it
-#
-# => Usage: If object presented - check is user_id is exact the same for grant author change
-# => Also this method modify @cur_user.author == true if allowed
-# All groups are dynamically taken from database, but overall permissions are located in permissions.yml file
-# You can generate permissions simply by run:
-# rake permission:build
-#---------------------------------------------------------
-
-	  private
-
-	  def access_control(object = nil)
-
-	      author = false
-
-	      if !object.nil? && !@cur_user.nil?
-
-		if object.class.name == @cur_user.class.name
-
-		    author_id = object.id
-
-		else
-
-		    author_id = object.user_id
-
-		end
-
-		if author_id == @cur_user.id
-
-		  author = true
-
-
-		else
-		  author = false
-
-		end
-
-	      end
-
-	      permission = Permission
-	      perm = permission.getReq(params[:controller], params[:action], request.request_method)
-
-	      if @cur_user.present?
-
-		user_perm = @cur_user.user_group.permission
-
-	      else
-
-		# -- Z - permission is default for non-logged user
-		user_perm="z"  
-
-	      end
-
-	      if !permission.grant?(user_perm, author)
-		redirect t('redirect.denied') 
-	      end
-
-	  end
-
-#---------------------------------------------------------
-# Redirecting directive
-# necessary to return for terminate any actions after redirecting to exclude double redirect error
-#---------------------------------------------------------
-
-	  def redirect(notice = nil, where = nil)
-
-	    if notice.blank?
-	      flash[:notice] = t("redirect.denied")
-	    else
-	      flash[:notice] = notice
-	    end
-
-#-----------------------------------------
-# If admin argument is equal admin - redirect going to admin panel or 
-#----------------------------------------
-    
-	      if where
-		      if where=='admin'
-			      redirect_to :controller=>"eb/admin"
-		      else
-				redirect_to where
-		      end
-	     else
-		redirect_to :root
-	     end
-
-
-	  end
-
-#---------------------------------------------------------
-# exist?
-# Checking object for existing. Important for most of control actions
-#---------------------------------------------------------
-	  def exist(obj)
-
-	    if obj.nil?
-
-	      redirect t("redirect.not_found")
-
-	    end
-
-	  end
-
-#---------------------------------------------------------
-# Can be deleted last object or not?
-#---------------------------------------------------------
-  
-	  def deleteLast(obj)
-
-	    if obj.id == 1
-
-	      redirect t("redirect.delete_last") 
-
-	    end
-	    
-	  end
-
-#---------------------------------------------------------
-# Get all eb CMS  engines connected to system
-#---------------------------------------------------------
-  
-	 def get_engines(engines=false)
-
-		engines = Array.new
-		
-		# Getting engines rails in Eb namespace 
-		Rails::Engine.subclasses.each do |engine|
-			if engine.name.include?("Eb")
-				if engines
-					engines << engine
-				else
-					engines << engine.name
-				end
-			end
-		end
-		@engines = engines
-		return engines
-
-	 end
-
-#---------------------------------------------------------
-# Get all eb engines connected to system
-#---------------------------------------------------------
-
-	 def get_controllers
-		 @controllers=Eb::Permission.getcontrollers
-	 end
-
- end
+    # Get all eb engines connected to system
+    def getcontrollers
+      @controllers = Eb::Permission.getcontrollers
+    end
+  end
 end
-
